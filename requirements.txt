@@ -1,4 +1,9 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic-settings>=2.4
-sqlalchemy>=2.0
+pydantic[email]>=2.7
+sqlalchemy[asyncio]>=2.0
+aiosqlite>=0.20
+asyncpg>=0.29
+phonenumbers>=8.13
+slowapi>=0.1.9
