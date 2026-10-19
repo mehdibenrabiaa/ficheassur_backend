@@ -5,7 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-import app.models.lead  # noqa: F401  (registers the table)
+import app.models.access_request  # noqa: F401  (registers the tables)
+import app.models.lead  # noqa: F401
+from app.api.v1.access_requests import router as access_requests_router
 from app.api.v1.leads import limiter, router as leads_router
 from app.config import settings
 from app.database import Base, engine
@@ -31,6 +33,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(leads_router)
+app.include_router(access_requests_router)
 
 
 @app.get("/api/health")
