@@ -7,3 +7,4 @@ aiosqlite>=0.20
 asyncpg>=0.29
 phonenumbers>=8.13
 slowapi>=0.1.9
+pyjwt>=2.9

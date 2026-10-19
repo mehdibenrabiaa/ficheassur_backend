@@ -2,3 +2,7 @@ venv/
 __pycache__/
 *.db
 .env
+
+# Local Python environment and test cache
+.venv/
+.pytest_cache/

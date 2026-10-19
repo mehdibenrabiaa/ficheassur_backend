@@ -9,10 +9,11 @@ from app.config import settings
 
 
 class InsuranceType(str, Enum):
+    """The markets FicheAssur sells leads in (frontend src/lib/leadTypes.ts)."""
     AUTO = "AUTO"
-    HEALTH = "HEALTH"
-    COMMERCIAL_AUTO = "COMMERCIAL_AUTO"
-    PRO_LIABILITY = "PRO_LIABILITY"
+    MOTO = "MOTO"
+    AUTO_PRO = "AUTO_PRO"  # pros de l'automobile: garages, négociants, convoyeurs
+    COMMERCIAL_AUTO = "COMMERCIAL_AUTO"  # véhicules pro: taxis, VTC, livreurs, flottes
 
 
 # Throwaway-inbox providers. A short built-in list; swap for a maintained

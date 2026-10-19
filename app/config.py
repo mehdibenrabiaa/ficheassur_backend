@@ -6,6 +6,11 @@ class Settings(BaseSettings):
     allowed_origins: str = "http://localhost:3100"
     target_region: str = "FR"
     blocked_ips: str = ""
+    # Signs the espace pro's login tokens. MUST be set to a long random value
+    # in production (e.g. python -c "import secrets; print(secrets.token_urlsafe(48))").
+    secret_key: str = "dev-only-change-me"
+    # Public site address, used to build broker activation links.
+    site_url: str = "http://localhost:3100"
 
     @property
     def origins_list(self) -> list[str]:
