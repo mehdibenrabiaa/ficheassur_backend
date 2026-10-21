@@ -60,3 +60,20 @@ def test_unauthenticated_and_bad_tokens_are_rejected(client):
     assert client.get("/api/v1/auth/me").status_code == 401
     assert client.get("/api/v1/auth/me", headers={"Authorization": "Bearer nope"}).status_code == 401
     assert client.get("/api/v1/admin/access-requests").status_code == 401
+
+
+def test_self_signup_gives_immediate_access(client):
+    email = f"inscrit{uuid.uuid4().hex[:6]}@exemple.fr"
+    body = {"full_name": "Léa Courtier", "company": "Cabinet LC", "email": email, "phone": "0612345678",
+            "orias_number": "", "lead_types": ["AUTO"], "password": "mon-mot-de-passe"}
+    r = client.post("/api/v1/auth/register", json=body)
+    assert r.status_code == 201 and r.json()["broker"]["role"] == "broker"
+
+    # Signed in straight away, and can log in normally afterwards.
+    h = {"Authorization": "Bearer " + r.json()["access_token"]}
+    assert client.get("/api/v1/auth/me", headers=h).json()["email"] == email
+    assert login(client, email, "mon-mot-de-passe").status_code == 200
+
+    # Same email twice, or a short password, is refused.
+    assert client.post("/api/v1/auth/register", json=body).status_code == 409
+    assert client.post("/api/v1/auth/register", json={**body, "email": "x" + email, "password": "court"}).status_code == 422

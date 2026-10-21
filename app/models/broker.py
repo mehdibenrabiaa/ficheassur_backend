@@ -10,7 +10,7 @@ from app.database import Base
 
 class BrokerRole(str, enum.Enum):
     broker = "broker"
-    admin = "admin"  # runs FicheAssur: accepts brokers, (later) credits and prices
+    admin = "admin"  # runs FicheAssur: accepts brokers, (later) refunds and prices
 
 
 class BrokerStatus(str, enum.Enum):
@@ -20,8 +20,9 @@ class BrokerStatus(str, enum.Enum):
 
 
 class Broker(Base):
-    """An espace pro account. Created when an admin accepts an AccessRequest;
-    the broker then sets a password through a one-time activation link."""
+    """An espace pro account. Usually self-service (POST /auth/register,
+    active at once); an admin can also open one from an AccessRequest, the
+    broker then setting a password through a one-time activation link."""
 
     __tablename__ = "brokers"
 

@@ -8,10 +8,14 @@ from slowapi.errors import RateLimitExceeded
 import app.models.access_request  # noqa: F401  (registers the tables)
 import app.models.lead  # noqa: F401
 import app.models.broker  # noqa: F401
+import app.models.commerce  # noqa: F401
 from app.api.v1.access_requests import router as access_requests_router
 from app.api.v1.admin import router as admin_router
 from app.api.v1.auth import router as auth_router
+from app.api.v1.billing import router as billing_router
+from app.api.v1.crm import router as crm_router
 from app.api.v1.leads import limiter, router as leads_router
+from app.api.v1.marketplace import router as marketplace_router
 from app.config import settings
 from app.database import Base, engine
 
@@ -39,6 +43,9 @@ app.include_router(leads_router)
 app.include_router(access_requests_router)
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(marketplace_router)
+app.include_router(billing_router)
+app.include_router(crm_router)
 
 
 @app.get("/api/health")

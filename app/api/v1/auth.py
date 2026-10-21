@@ -1,5 +1,6 @@
-"""Espace pro sign-in: login, activation (first password from the link an
-admin sends), and the signed-in broker's own profile."""
+"""Espace pro sign-in: self-service sign-up, login, activation (first
+password from a link an admin sends, for accounts an admin opened), and the
+signed-in broker's own profile."""
 
 from datetime import datetime, timezone
 
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.leads import limiter
 from app.database import get_db
 from app.models.broker import Broker, BrokerStatus
+from app.schemas.access_request import AccessRequestCreate
 from app.security import create_access_token, current_broker, hash_password, hash_token, verify_password
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
@@ -23,6 +25,13 @@ class LoginIn(BaseModel):
 
 class ActivateIn(BaseModel):
     token: str = Field(min_length=10, max_length=200)
+    password: str = Field(min_length=8, max_length=200)
+
+
+class RegisterIn(AccessRequestCreate):
+    """The partner form's fields (same validation: phone, ORIAS format,
+    markets) plus the password. The ORIAS number is stored but nothing waits
+    on it -- the account is usable straight away."""
     password: str = Field(min_length=8, max_length=200)
 
 
@@ -42,6 +51,23 @@ class TokenOut(BaseModel):
 
 def broker_out(b: Broker) -> BrokerOut:
     return BrokerOut(id=str(b.id), email=b.email, full_name=b.full_name, company=b.company, role=b.role.value, lead_types=b.lead_types or [])
+
+
+@router.post("/register", response_model=TokenOut, status_code=201)
+@limiter.limit("5/hour")
+async def register(request: Request, payload: RegisterIn, db: AsyncSession = Depends(get_db)):
+    if (await db.execute(select(Broker.id).where(Broker.email == payload.email))).first():
+        raise HTTPException(status_code=409, detail="Un compte existe déjà avec cet email. Connectez-vous.")
+    now = datetime.now(timezone.utc)
+    broker = Broker(
+        email=payload.email, full_name=payload.full_name, company=payload.company, phone=payload.phone,
+        orias_number=payload.orias_number, lead_types=[t.value for t in payload.lead_types],
+        status=BrokerStatus.active, password_hash=hash_password(payload.password), last_login_at=now,
+    )
+    db.add(broker)
+    await db.commit()
+    await db.refresh(broker)
+    return TokenOut(access_token=create_access_token(broker), broker=broker_out(broker))
 
 
 @router.post("/login", response_model=TokenOut)
