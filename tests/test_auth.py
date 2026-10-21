@@ -77,3 +77,31 @@ def test_self_signup_gives_immediate_access(client):
     # Same email twice, or a short password, is refused.
     assert client.post("/api/v1/auth/register", json=body).status_code == 409
     assert client.post("/api/v1/auth/register", json={**body, "email": "x" + email, "password": "court"}).status_code == 422
+
+
+def test_account_settings(client):
+    email = f"compte{uuid.uuid4().hex[:6]}@exemple.fr"
+    r = client.post("/api/v1/auth/register", json={
+        "full_name": "Jean Compte", "company": "Cabinet A", "email": email, "phone": "0612345678",
+        "orias_number": None, "lead_types": ["AUTO"], "message": None, "password": "ancien-pass-1",
+    })
+    h = {"Authorization": "Bearer " + r.json()["access_token"]}
+    me = client.get("/api/v1/auth/me", headers=h).json()
+    assert me["phone"] == "+33612345678" and me["has_password"] and me["created_at"]
+
+    profile = {"full_name": "Jean Compte", "company": "Cabinet B", "phone": "07 45 89 18 65", "orias_number": "12 345 678", "lead_types": ["AUTO", "MOTO"]}
+    out = client.patch("/api/v1/auth/me", json=profile, headers=h).json()
+    assert out["company"] == "Cabinet B" and out["orias_number"] == "12345678" and out["lead_types"] == ["AUTO", "MOTO"]
+    assert client.patch("/api/v1/auth/me", json={**profile, "orias_number": "123"}, headers=h).status_code == 422
+    assert client.patch("/api/v1/auth/me", json={**profile, "lead_types": ["SANTE"]}, headers=h).status_code == 422
+
+    assert client.post("/api/v1/auth/password", json={"current_password": "faux", "new_password": "nouveau-pass-2"}, headers=h).status_code == 400
+    other_session = {"Authorization": "Bearer " + login(client, email, "ancien-pass-1").json()["access_token"]}
+    changed = client.post("/api/v1/auth/password", json={"current_password": "ancien-pass-1", "new_password": "nouveau-pass-2"}, headers=h)
+    assert changed.status_code == 200
+    assert login(client, email, "ancien-pass-1").status_code == 401
+    assert login(client, email, "nouveau-pass-2").status_code == 200
+    # Every session from before the change is signed out; this one got a fresh token.
+    assert client.get("/api/v1/auth/me", headers=other_session).status_code == 401
+    assert client.get("/api/v1/auth/me", headers=h).status_code == 401
+    assert client.get("/api/v1/auth/me", headers={"Authorization": "Bearer " + changed.json()["access_token"]}).status_code == 200

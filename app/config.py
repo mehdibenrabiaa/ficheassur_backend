@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     secret_key: str = "dev-only-change-me"
     # Public site address, used to build broker activation links.
     site_url: str = "http://localhost:3100"
+    # OAuth client ID of the "Continuer avec Google" button (Google Cloud
+    # console > APIs & Services > Credentials). Blank = Google sign-in off.
+    google_client_id: str = ""
     # Card payment at each purchase (Stripe Checkout). Leave blank and set
     # PAYMENTS_SIMULATED to true in local dev to buy leads without a real
     # payment. Never set PAYMENTS_SIMULATED in production.

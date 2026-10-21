@@ -47,9 +47,19 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def password_version(broker: Broker) -> str:
+    """A fingerprint of the current password, put in every login token: when
+    the password changes, every token issued before stops working -- so a
+    stolen session can't outlive a password change (and no extra column)."""
+    return hmac.new(settings.secret_key.encode(), (broker.password_hash or "no-password").encode(), "sha256").hexdigest()[:16]
+
+
 def create_access_token(broker: Broker) -> str:
     now = datetime.now(timezone.utc)
-    payload = {"sub": str(broker.id), "role": broker.role.value, "iat": now, "exp": now + TOKEN_TTL, "scope": "espace-pro"}
+    payload = {
+        "sub": str(broker.id), "role": broker.role.value, "iat": now, "exp": now + TOKEN_TTL, "scope": "espace-pro",
+        "pv": password_version(broker),
+    }
     return jwt.encode(payload, settings.secret_key, algorithm=_ALGO)
 
 
@@ -63,7 +73,7 @@ async def current_broker(authorization: str | None = Header(default=None), db: A
         broker = await db.get(Broker, uuid.UUID(payload["sub"]))
     except (jwt.PyJWTError, ValueError, KeyError):
         raise HTTPException(status_code=401, detail="Session expirée, merci de vous reconnecter.")
-    if not broker or broker.status != BrokerStatus.active:
+    if not broker or broker.status != BrokerStatus.active or not hmac.compare_digest(str(payload.get("pv", "")), password_version(broker)):
         raise HTTPException(status_code=401, detail="Session expirée, merci de vous reconnecter.")
     return broker
 

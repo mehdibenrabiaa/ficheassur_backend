@@ -4,9 +4,9 @@ the history timeline."""
 
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid
+from sqlalchemy import Boolean, Date, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -105,6 +105,42 @@ class PurchaseEvent(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     purchase_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("purchases.id"), index=True)
-    kind: Mapped[str] = mapped_column(String(20))  # purchased | status | reminder | note
+    kind: Mapped[str] = mapped_column(String(20))  # purchased | status | reminder | note | revenue
     detail: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class PurchaseRevenue(Base):
+    """What a bought lead earned the broker: commission, brokerage fees... as
+    many lines as they invoice (a first commission, then renewals). Against
+    the lead's price, it gives the return on what they spend on leads. Its own
+    table, so adding it needs no change to existing ones."""
+
+    __tablename__ = "purchase_revenues"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    purchase_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("purchases.id"), index=True)
+    broker_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brokers.id"), index=True)
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    label: Mapped[str] = mapped_column(String(80))  # "Commission", "Frais de courtage"...
+    invoiced_on: Mapped[date] = mapped_column(Date, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class BrokerExpense(Base):
+    """A running cost of the broker's activity besides leads -- phone,
+    internet, software subscriptions... -- so Finances shows the real profit.
+    One-off (paid once on start_on), monthly or yearly (every month / every
+    anniversary from start_on until end_on, if stopped)."""
+
+    __tablename__ = "broker_expenses"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    broker_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("brokers.id"), index=True)
+    label: Mapped[str] = mapped_column(String(80))
+    category: Mapped[str] = mapped_column(String(20))  # phone | internet | software | other
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    frequency: Mapped[str] = mapped_column(String(10))  # once | monthly | yearly
+    start_on: Mapped[date] = mapped_column(Date)
+    end_on: Mapped[date | None] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

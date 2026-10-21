@@ -4,6 +4,7 @@ Checkout. While the broker is on the payment page their leads are held for
 them; the leads are delivered once Stripe confirms the payment (webhook in
 billing.py). With PAYMENTS_SIMULATED (local dev only) checkout is paid at once."""
 
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -19,7 +20,7 @@ from app.api.v1.billing import customer_id, payments_simulated, use_stripe
 from app.config import settings
 from app.database import get_db
 from app.models.broker import Broker
-from app.models.commerce import Order, OrderItem, OrderStatus
+from app.models.commerce import Order, OrderItem, OrderStatus, Purchase
 from app.models.lead import Lead, LeadStatus
 from app.pricing import HOLD_MINUTES, MAX_SHARED_BUYERS, PRICES_CENTS, SHELF_DAYS, price_cents
 from app.security import current_broker
@@ -28,7 +29,22 @@ from app.services.orders import can_take, fulfil, taken_by_lead
 router = APIRouter(prefix="/api/v1/marketplace", tags=["marketplace"])
 
 # Lead `details` keys never shown before purchase (they could identify the prospect).
-_PRIVATE_DETAIL_KEYS = {"email", "phone", "telephone", "address", "adresse", "last_name", "nom", "plate", "immatriculation"}
+# The marketplace shows leads before purchase, so anything that identifies or
+# reaches the prospect must stay out. `details` arrives free-form from the
+# quote forms (French labels), so this is defensive on two levels: a field
+# whose name looks private is dropped, and so is any value that looks like
+# contact data whatever its label (a phone number typed in "Commentaire").
+# Matched anywhere in the field name...
+_PRIVATE_KEY_PARTS = (
+    "mail", "phone", "telephone", "téléphone", "portable", "mobile", "adresse", "address", "postal", "prenom",
+    "prénom", "immat", "plaque", "plate", "naissance", "birth", "siret", "siren", "iban", "numero", "numéro",
+    "contact", "commentaire", "message", "comment", "précision", "precision",
+)
+# ...and these only as whole words ("nom" but not "Nombre de véhicules").
+_PRIVATE_KEY_WORDS = {"nom", "name", "tel", "tél", "rue", "rib", "note", "notes"}
+_CONTACT_VALUE = re.compile(
+    r"@|https?://|www\.|(?:\+|00)\d|\d[\d\s.\-]{7,}\d|\b\d{5}\b|\b[A-Z]{2}-?\d{3}-?[A-Z]{2}\b", re.IGNORECASE
+)
 
 MARKET_NAMES = {"AUTO": "Auto", "MOTO": "Moto", "AUTO_PRO": "Pro de l'automobile", "COMMERCIAL_AUTO": "Véhicules pro"}
 
@@ -58,9 +74,10 @@ class CheckoutIn(BaseModel):
 
 
 class CheckoutOut(BaseModel):
-    status: str  # "paid" (simulated payments) | "redirect" (go to url)
+    status: str  # "paid" (simulated payments) | "embedded" (show Stripe's form)
     order_id: str
-    url: str | None = None
+    # For Stripe's Embedded Checkout, mounted in the site with this secret.
+    client_secret: str | None = None
 
 
 def _aware(d: datetime) -> datetime:
@@ -70,7 +87,11 @@ def _aware(d: datetime) -> datetime:
 def _public_details(details: dict[str, Any] | None) -> dict[str, Any]:
     out = {}
     for k, v in (details or {}).items():
-        if k.lower() in _PRIVATE_DETAIL_KEYS or isinstance(v, (dict, list)):
+        key = str(k).lower()
+        words = set(re.findall(r"[^\W\d_]+", key))
+        if isinstance(v, (dict, list)) or any(part in key for part in _PRIVATE_KEY_PARTS) or words & _PRIVATE_KEY_WORDS:
+            continue
+        if isinstance(v, str) and (len(v) > 60 or _CONTACT_VALUE.search(v)):
             continue
         out[k] = v
         if len(out) == 8:
@@ -173,7 +194,6 @@ async def checkout(payload: CheckoutIn, broker: Broker = Depends(current_broker)
         await fulfil(db, order)
         return CheckoutOut(status="paid", order_id=str(order.id))
 
-    base = settings.site_url.rstrip("/")
     try:
         session = await run_in_threadpool(
             stripe.checkout.Session.create,
@@ -187,8 +207,10 @@ async def checkout(payload: CheckoutIn, broker: Broker = Depends(current_broker)
             saved_payment_method_options={"payment_method_save": "enabled"},
             metadata={"order_id": str(order.id), "broker_id": str(broker.id)},
             expires_at=int((now + timedelta(minutes=HOLD_MINUTES)).timestamp()),
-            success_url=f"{base}/espace-pro/acheter?commande=ok",
-            cancel_url=f"{base}/espace-pro/acheter?commande=annulee&id={order.id}",
+            # Embedded Checkout: Stripe's form shown inside the espace pro;
+            # the page confirms the order itself when it completes.
+            ui_mode="embedded_page",
+            redirect_on_completion="never",
             locale="fr",
         )
     except stripe.StripeError:
@@ -197,12 +219,81 @@ async def checkout(payload: CheckoutIn, broker: Broker = Depends(current_broker)
         raise HTTPException(status_code=502, detail="Le paiement n'a pas pu être lancé. Réessayez dans un instant.")
     order.stripe_session_id = session.id
     await db.commit()
-    return CheckoutOut(status="redirect", order_id=str(order.id), url=session.url)
+    return CheckoutOut(status="embedded", order_id=str(order.id), client_secret=session.client_secret)
+
+
+class OrderLineView(BaseModel):
+    id: str  # the order line (two leads can share a label)
+    label: str
+    price_cents: int
+    purchase_id: str | None = None  # once paid: the lead's page in "Mes leads"
+
+
+class OrderView(BaseModel):
+    id: str
+    status: str  # pending | paid | expired
+    total_cents: int
+    refunded_cents: int
+    expires_at: datetime
+    items: list[OrderLineView]
+    # Pending only: mounts Stripe's Embedded Checkout on the payment page.
+    client_secret: str | None = None
+
+
+@router.get("/orders/{order_id}", response_model=OrderView)
+async def get_order(order_id: uuid.UUID, broker: Broker = Depends(current_broker), db: AsyncSession = Depends(get_db)):
+    """The payment page: the order's summary and, while it can still be
+    paid, the secret to show Stripe's form (read back from Stripe, so a page
+    reload keeps working)."""
+    order = await db.get(Order, order_id)
+    if not order or order.broker_id != broker.id:
+        raise HTTPException(status_code=404, detail="Commande introuvable.")
+    expires = order.expires_at if order.expires_at.tzinfo else order.expires_at.replace(tzinfo=timezone.utc)
+    if order.status == OrderStatus.pending and expires < datetime.now(timezone.utc):
+        order.status = OrderStatus.expired
+        await db.commit()
+    items = (await db.execute(select(OrderItem).where(OrderItem.order_id == order.id))).scalars().all()
+    bought = {}
+    if order.status == OrderStatus.paid:
+        bought = {p.lead_id: str(p.id) for p in (await db.execute(select(Purchase).where(Purchase.order_id == order.id))).scalars()}
+    secret = None
+    if order.status == OrderStatus.pending and order.stripe_session_id and settings.stripe_secret_key:
+        stripe.api_key = settings.stripe_secret_key
+        try:
+            secret = (await run_in_threadpool(stripe.checkout.Session.retrieve, order.stripe_session_id)).client_secret
+        except stripe.StripeError:
+            raise HTTPException(status_code=502, detail="Le paiement n'a pas pu être chargé. Réessayez dans un instant.")
+    return OrderView(
+        id=str(order.id), status=order.status.value, total_cents=order.total_cents, refunded_cents=order.refunded_cents or 0,
+        expires_at=expires, client_secret=secret,
+        items=[OrderLineView(id=str(i.id), label=i.label, price_cents=i.price_cents, purchase_id=bought.get(i.lead_id)) for i in items],
+    )
+
+
+@router.post("/orders/{order_id}/confirm", status_code=204)
+async def confirm(order_id: uuid.UUID, broker: Broker = Depends(current_broker), db: AsyncSession = Depends(get_db)):
+    """Embedded Checkout completed: ask Stripe whether the session is paid
+    and deliver the leads now, rather than waiting for the webhook (which
+    can lag, and can't reach a local dev machine at all). Safe to repeat:
+    fulfilment is idempotent, and only Stripe's answer counts."""
+    order = await db.get(Order, order_id)
+    if not order or order.broker_id != broker.id:
+        raise HTTPException(status_code=404, detail="Commande introuvable.")
+    if order.status == OrderStatus.paid or not order.stripe_session_id or not settings.stripe_secret_key:
+        return
+    stripe.api_key = settings.stripe_secret_key
+    try:
+        session = (await run_in_threadpool(stripe.checkout.Session.retrieve, order.stripe_session_id)).to_dict()
+    except stripe.StripeError:
+        return  # the webhook settles it
+    if session.get("payment_status") == "paid":
+        order.stripe_payment_intent_id = session.get("payment_intent")
+        await fulfil(db, order)
 
 
 @router.post("/orders/{order_id}/cancel", status_code=204)
 async def cancel(order_id: uuid.UUID, broker: Broker = Depends(current_broker), db: AsyncSession = Depends(get_db)):
-    """Back from Stripe without paying: release the held leads right away."""
+    """Payment form closed without paying: release the held leads right away."""
     order = await db.get(Order, order_id)
     if not order or order.broker_id != broker.id:
         raise HTTPException(status_code=404, detail="Commande introuvable.")

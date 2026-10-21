@@ -25,10 +25,12 @@ router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
 
 
 class CardOut(BaseModel):
+    id: str  # Stripe payment method id
     brand: str
     last4: str
     exp_month: int
     exp_year: int
+    default: bool = False
 
 
 class OrderLine(BaseModel):
@@ -46,7 +48,8 @@ class OrderOut(BaseModel):
 
 class BillingOut(BaseModel):
     simulated: bool
-    card: CardOut | None
+    card: CardOut | None  # the default one (or the first)
+    cards: list[CardOut] = []
     orders: list[OrderOut]
 
 
@@ -84,21 +87,19 @@ async def billing(broker: Broker = Depends(current_broker), db: AsyncSession = D
     )).scalars().all()
     items = (await db.execute(select(OrderItem).where(OrderItem.order_id.in_([o.id for o in orders])))).scalars().all() if orders else []
 
-    card = None
+    cards: list[CardOut] = []
     acct = await db.get(BillingAccount, broker.id)
     if acct and settings.stripe_secret_key:
         stripe.api_key = settings.stripe_secret_key
         try:
-            pms = await run_in_threadpool(stripe.PaymentMethod.list, customer=acct.stripe_customer_id, type="card", limit=1)
-            if pms.data:
-                c = pms.data[0].card
-                card = CardOut(brand=c.brand, last4=c.last4, exp_month=c.exp_month, exp_year=c.exp_year)
+            cards = await _cards(acct.stripe_customer_id)
         except stripe.StripeError:
             pass  # the page still lists the orders if Stripe is unreachable
 
     return BillingOut(
         simulated=payments_simulated(),
-        card=card,
+        card=next((c for c in cards if c.default), cards[0] if cards else None),
+        cards=cards,
         orders=[
             OrderOut(
                 id=str(o.id), total_cents=o.total_cents, refunded_cents=o.refunded_cents, paid_at=_aware(o.paid_at),
@@ -107,6 +108,58 @@ async def billing(broker: Broker = Depends(current_broker), db: AsyncSession = D
             for o in orders
         ],
     )
+
+
+async def _cards(customer: str) -> list[CardOut]:
+    pms = await run_in_threadpool(stripe.PaymentMethod.list, customer=customer, type="card", limit=20)
+    cust = await run_in_threadpool(stripe.Customer.retrieve, customer)
+    default = (cust.to_dict().get("invoice_settings") or {}).get("default_payment_method")
+    out = [
+        CardOut(id=pm.id, brand=pm.card.brand, last4=pm.card.last4, exp_month=pm.card.exp_month, exp_year=pm.card.exp_year, default=pm.id == default)
+        for pm in pms.data
+    ]
+    if out and not any(c.default for c in out):
+        out[0].default = True  # no explicit default: Stripe uses the most recent
+    return out
+
+
+# Saved cards, managed inside the espace pro: the card form is Stripe's
+# Payment Element on our page (card details go straight to Stripe), backed by
+# a SetupIntent. Each card is checked to belong to this broker's customer.
+
+@router.post("/cards/setup")
+async def card_setup(broker: Broker = Depends(current_broker), db: AsyncSession = Depends(get_db)):
+    """A SetupIntent to save a new card from the page's form."""
+    use_stripe()
+    intent = await run_in_threadpool(
+        stripe.SetupIntent.create, customer=await customer_id(db, broker), usage="off_session",
+        allowed_payment_method_types=["card"],  # this form saves cards only (not PayPal, wallets...)
+    )
+    return {"client_secret": intent.client_secret}
+
+
+async def _own_card(db: AsyncSession, broker: Broker, payment_method_id: str):
+    use_stripe()
+    acct = await db.get(BillingAccount, broker.id)
+    try:
+        pm = await run_in_threadpool(stripe.PaymentMethod.retrieve, payment_method_id)
+    except stripe.StripeError:
+        pm = None
+    if not acct or not pm or pm.customer != acct.stripe_customer_id:
+        raise HTTPException(status_code=404, detail="Carte introuvable.")
+    return acct, pm
+
+
+@router.post("/cards/{payment_method_id}/default", status_code=204)
+async def card_default(payment_method_id: str, broker: Broker = Depends(current_broker), db: AsyncSession = Depends(get_db)):
+    acct, pm = await _own_card(db, broker, payment_method_id)
+    await run_in_threadpool(stripe.Customer.modify, acct.stripe_customer_id, invoice_settings={"default_payment_method": pm.id})
+
+
+@router.delete("/cards/{payment_method_id}", status_code=204)
+async def card_delete(payment_method_id: str, broker: Broker = Depends(current_broker), db: AsyncSession = Depends(get_db)):
+    _, pm = await _own_card(db, broker, payment_method_id)
+    await run_in_threadpool(stripe.PaymentMethod.detach, pm.id)
 
 
 @router.post("/portal")
@@ -134,7 +187,7 @@ async def webhook(request: Request, db: AsyncSession = Depends(get_db)):
     except (ValueError, stripe.SignatureVerificationError):
         raise HTTPException(status_code=400, detail="Signature invalide.")
 
-    session = event["data"]["object"]
+    session = event["data"]["object"].to_dict()  # stripe>=13: objects are not dicts
     order_id = (session.get("metadata") or {}).get("order_id")
     order = await db.get(Order, uuid.UUID(order_id)) if order_id else None
     if not order:
