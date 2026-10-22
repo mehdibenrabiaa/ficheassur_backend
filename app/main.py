@@ -11,8 +11,11 @@ import app.models.broker  # noqa: F401
 import app.models.commerce  # noqa: F401
 import app.models.support  # noqa: F401
 import app.models.lead_import  # noqa: F401
+import app.models.article  # registers editorial content
 import app.models.oauth_identity  # noqa: F401
 from app.api.v1.access_requests import router as access_requests_router
+from app.api.v1.editorial import admin_router as editorial_admin_router, public_router as editorial_public_router
+from app.api.v1.management import router as management_router
 from app.api.v1.admin import router as admin_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.billing import router as billing_router
@@ -48,6 +51,9 @@ app.include_router(leads_router)
 app.include_router(access_requests_router)
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(editorial_admin_router)
+app.include_router(editorial_public_router)
+app.include_router(management_router)
 app.include_router(marketplace_router)
 app.include_router(billing_router)
 app.include_router(crm_router)
