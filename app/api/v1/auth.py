@@ -8,6 +8,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -18,6 +19,7 @@ from app.api.v1.leads import limiter
 from app.config import settings
 from app.database import get_db
 from app.models.broker import Broker, BrokerStatus
+from app.models.oauth_identity import OAuthIdentity
 from app.schemas.access_request import AccessRequestCreate
 from app.schemas.lead import InsuranceType
 from app.security import create_access_token, current_broker, hash_password, hash_token, verify_password
@@ -243,4 +245,64 @@ async def change_password(request: Request, payload: PasswordIn, broker: Broker 
         raise HTTPException(status_code=400, detail="Choisissez un mot de passe différent de l'actuel.")
     broker.password_hash = hash_password(payload.new_password)
     await db.commit()
+    return TokenOut(access_token=create_access_token(broker), broker=broker_out(broker))
+
+
+
+# --- "Continuer avec Microsoft": the site gets an ID token from Microsoft's
+# popup (any work/school or personal account); we check its signature against
+# Microsoft's published keys, that it was issued to *our* app, and by the
+# tenant it claims. Accounts are linked by Microsoft's user id (OAuthIdentity),
+# not by email -- see that model for why.
+
+_MS_JWKS = jwt.PyJWKClient("https://login.microsoftonline.com/common/discovery/v2.0/keys", cache_keys=True)
+
+
+class MicrosoftIn(BaseModel):
+    id_token: str = Field(min_length=20, max_length=8192)
+
+
+def _verify_microsoft(token: str) -> dict:
+    """The token's claims, or HTTP 401."""
+    try:
+        key = _MS_JWKS.get_signing_key_from_jwt(token).key
+        claims = jwt.decode(token, key, algorithms=["RS256"], audience=settings.microsoft_client_id)
+    except (jwt.PyJWTError, OSError) as e:
+        raise HTTPException(status_code=401, detail="Connexion Microsoft refusée. Réessayez.") from e
+    tid = claims.get("tid")
+    if not tid or claims.get("iss") != f"https://login.microsoftonline.com/{tid}/v2.0" or not (claims.get("oid") or claims.get("sub")):
+        raise HTTPException(status_code=401, detail="Connexion Microsoft refusée. Réessayez.")
+    return claims
+
+
+@router.post("/microsoft", response_model=TokenOut)
+@limiter.limit("10/minute")
+async def microsoft(request: Request, payload: MicrosoftIn, db: AsyncSession = Depends(get_db)):
+    if not settings.microsoft_client_id:
+        raise HTTPException(status_code=503, detail="La connexion avec Microsoft n'est pas encore configurée.")
+    claims = await run_in_threadpool(_verify_microsoft, payload.id_token)
+    subject = f"{claims['tid']}:{claims.get('oid') or claims['sub']}"
+    email = (claims.get("email") or claims.get("preferred_username") or "").strip().lower()
+    now = datetime.now(timezone.utc)
+
+    identity = (await db.execute(select(OAuthIdentity).where(OAuthIdentity.provider == "microsoft", OAuthIdentity.subject == subject))).scalar_one_or_none()
+    if identity:
+        broker = await db.get(Broker, identity.broker_id)
+        if not broker or broker.status == BrokerStatus.disabled:
+            raise HTTPException(status_code=403, detail="Ce compte est désactivé. Contactez-nous.")
+    else:
+        if "@" not in email:
+            raise HTTPException(status_code=400, detail="Votre compte Microsoft ne communique pas d'adresse email. Inscrivez-vous avec votre email.")
+        if (await db.execute(select(Broker.id).where(Broker.email == email))).first():
+            # Never attach a Microsoft account to an existing FicheAssur account on the email alone.
+            raise HTTPException(status_code=409, detail="Un compte FicheAssur existe déjà avec cet email. Connectez-vous avec votre mot de passe ou avec Google.")
+        broker = Broker(email=email, full_name=(claims.get("name") or email.split("@")[0])[:120], company="", lead_types=[],
+                        status=BrokerStatus.active)
+        db.add(broker)
+        await db.flush()
+        db.add(OAuthIdentity(provider="microsoft", subject=subject, broker_id=broker.id, email=email))
+    broker.status = BrokerStatus.active if broker.status != BrokerStatus.disabled else broker.status
+    broker.last_login_at = now
+    await db.commit()
+    await db.refresh(broker)
     return TokenOut(access_token=create_access_token(broker), broker=broker_out(broker))

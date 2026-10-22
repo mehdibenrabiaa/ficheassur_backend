@@ -284,10 +284,12 @@ def test_finance_periods(client):
     """Each amount on its own date: a commission invoiced in another month
     counts in that month, not in the month the lead was bought."""
     from datetime import date
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
     h = signup(client)
     buy(client, h, make_lead())
     pid = client.get("/api/v1/crm/leads", headers=h).json()[0]["id"]
-    today = date.today()
+    today = datetime.now(ZoneInfo("Europe/Paris")).date()  # the backend counts days in Paris time
     this_month = today.replace(day=1)
     client.post(f"/api/v1/crm/leads/{pid}/revenues", json={"amount_cents": 20000, "label": "Commission", "invoiced_on": today.isoformat()}, headers=h)
     client.post(f"/api/v1/crm/leads/{pid}/revenues", json={"amount_cents": 7000, "label": "Ancienne", "invoiced_on": "2020-03-10"}, headers=h)

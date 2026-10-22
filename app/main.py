@@ -10,6 +10,8 @@ import app.models.lead  # noqa: F401
 import app.models.broker  # noqa: F401
 import app.models.commerce  # noqa: F401
 import app.models.support  # noqa: F401
+import app.models.lead_import  # noqa: F401
+import app.models.oauth_identity  # noqa: F401
 from app.api.v1.access_requests import router as access_requests_router
 from app.api.v1.admin import router as admin_router
 from app.api.v1.auth import router as auth_router
@@ -18,6 +20,7 @@ from app.api.v1.crm import router as crm_router
 from app.api.v1.leads import limiter, router as leads_router
 from app.api.v1.marketplace import router as marketplace_router
 from app.api.v1.support import router as support_router
+from app.api.v1.imports import router as imports_router
 from app.config import settings
 from app.database import Base, engine
 
@@ -49,6 +52,7 @@ app.include_router(marketplace_router)
 app.include_router(billing_router)
 app.include_router(crm_router)
 app.include_router(support_router)
+app.include_router(imports_router)
 
 
 @app.get("/api/health")

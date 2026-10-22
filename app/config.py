@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     # OAuth client ID of the "Continuer avec Google" button (Google Cloud
     # console > APIs & Services > Credentials). Blank = Google sign-in off.
     google_client_id: str = ""
+    # Application (client) ID of the "Continuer avec Microsoft" app (Azure
+    # portal > App registrations). Blank = Microsoft sign-in off.
+    microsoft_client_id: str = ""
+    # Shared secret New World Courtage's backend sends (X-Import-Key) to put
+    # leads on sale here. Blank = imports off. A long random value.
+    import_api_key: str = ""
     # Card payment at each purchase (Stripe Checkout). Leave blank and set
     # PAYMENTS_SIMULATED to true in local dev to buy leads without a real
     # payment. Never set PAYMENTS_SIMULATED in production.
