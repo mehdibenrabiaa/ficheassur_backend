@@ -38,9 +38,11 @@ class ActivateIn(BaseModel):
 
 
 class RegisterIn(AccessRequestCreate):
-    """The partner form's fields (same validation: phone, ORIAS format,
-    markets) plus the password. The ORIAS number is stored but nothing waits
-    on it -- the account is usable straight away."""
+    """The partner form's fields (same validation: phone, ORIAS format) plus
+    the password. Markets are optional here -- the sign-up page doesn't ask
+    for them. The ORIAS number is stored but nothing waits on it -- the
+    account is usable straight away."""
+    lead_types: list[InsuranceType] = Field(default_factory=list, max_length=10)
     password: str = Field(min_length=8, max_length=200)
 
 
