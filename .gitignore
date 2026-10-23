@@ -6,3 +6,6 @@ __pycache__/
 # Local Python environment and test cache
 .venv/
 .pytest_cache/
+
+# Local server logs
+*.log
